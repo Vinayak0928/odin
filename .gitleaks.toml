@@ -1,0 +1,10 @@
+# Gitleaks configuration
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore false positives for American Petroleum Institute standards (API 510, API 570)"
+regexes = [
+    '''(?i)api510''',
+    '''(?i)api570''',
+]
