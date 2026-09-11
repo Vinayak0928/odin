@@ -1,0 +1,13 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / Need Help
+    url: https://github.com/vinay/mrpl-sovereign-workbench/discussions
+    about: Ask how-to questions, setup help, and model configuration questions here. Issues are for confirmed bugs and concrete proposals only.
+
+  - name: Idea or Suggestion
+    url: https://github.com/vinay/mrpl-sovereign-workbench/discussions
+    about: Discuss ideas and gauge interest before opening a formal feature request.
+
+  - name: Security Vulnerability
+    url: https://github.com/vinay/mrpl-sovereign-workbench/security/advisories/new
+    about: Report vulnerabilities privately — never as a public issue. Read SECURITY.md before reporting.
