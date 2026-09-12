@@ -1,5 +1,7 @@
-import sys, os
-sys.path.insert(0, os.path.abspath('.'))
+import sys
+from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR))
 from src.rag_singleton import get_rag_manager
 
 rm = get_rag_manager()

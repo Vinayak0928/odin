@@ -54,10 +54,32 @@ if (-not (Test-Path $chromaExe)) {
     $chromaExe = (Get-Command chroma.exe -ErrorAction SilentlyContinue).Source
 }
 
+$validPyExe = $null
 if (Test-Path $pythonExe) {
+    try {
+        $testOut = (& $pythonExe -c "import sys; print('ok')" 2>$null).Trim()
+        if ($testOut -eq "ok") { $validPyExe = $pythonExe }
+    } catch {
+        $validPyExe = $null
+    }
+}
+
+if (-not $validPyExe) {
+    foreach ($cmd in @("py", "python")) {
+        $c = Get-Command $cmd -ErrorAction SilentlyContinue
+        if ($c) {
+            try {
+                $testOut = (& $c.Source -c "import sys; print('ok')" 2>$null).Trim()
+                if ($testOut -eq "ok") { $validPyExe = $c.Source; break }
+            } catch {}
+        }
+    }
+}
+
+if ($validPyExe) {
     Write-Host "[SUCCESS] Launching local ChromaDB server on http://127.0.0.1:$Port..." -ForegroundColor Green
     Write-Host "Press Ctrl+C to stop the ChromaDB server." -ForegroundColor Gray
-    & $pythonExe -m chromadb.cli.cli run --path "$DataPath" --port $Port --host 127.0.0.1
+    & $validPyExe -m chromadb.cli.cli run --path "$DataPath" --port $Port --host 127.0.0.1
     exit 0
 } elseif ($chromaExe -and (Test-Path $chromaExe)) {
     Write-Host "[SUCCESS] Launching local ChromaDB server on http://127.0.0.1:$Port..." -ForegroundColor Green
@@ -65,6 +87,6 @@ if (Test-Path $pythonExe) {
     & $chromaExe run --path "$DataPath" --port $Port --host 127.0.0.1
     exit 0
 } else {
-    Write-Host "[ERROR] Chroma CLI or Python venv not found. Please run: .\venv\Scripts\pip install chromadb" -ForegroundColor Red
+    Write-Host "[ERROR] Chroma CLI or Python environment not found. Please install Python 3.11+ and chromadb." -ForegroundColor Red
     exit 1
 }

@@ -1,6 +1,9 @@
 import json
+from pathlib import Path
 
-with open('d:/odin/odin/data/agent_workspace/mrpl_refinery_300page_corpus.json', encoding='utf-8') as f:
+BASE_DIR = Path(__file__).resolve().parent.parent
+corpus_path = BASE_DIR / 'data' / 'agent_workspace' / 'mrpl_refinery_300page_corpus.json'
+with open(corpus_path, encoding='utf-8') as f:
     data = json.load(f)
 
 for section, records in data.items():

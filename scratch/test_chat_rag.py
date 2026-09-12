@@ -1,5 +1,7 @@
-import sys, os
-sys.path.insert(0, os.path.abspath('.'))
+import sys
+from pathlib import Path
+BASE_DIR_PATH = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR_PATH))
 import asyncio
 from core.session_manager import SessionManager
 from src.constants import SESSIONS_FILE, BASE_DIR

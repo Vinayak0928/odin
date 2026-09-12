@@ -1,7 +1,9 @@
 import sqlite3
 import json
+from pathlib import Path
 
-db_path = 'd:/odin/odin/data/app.db'
+BASE_DIR = Path(__file__).resolve().parent.parent
+db_path = str(BASE_DIR / 'data' / 'app.db')
 con = sqlite3.connect(db_path)
 cur = con.cursor()
 

@@ -21,11 +21,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_AUDIT_LOG_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data",
-    "audit_trail.jsonl",
-)
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_raw_audit_path = os.getenv("MRPL_AUDIT_LOG_PATH")
+if _raw_audit_path:
+    DEFAULT_AUDIT_LOG_PATH = (
+        _raw_audit_path
+        if os.path.isabs(_raw_audit_path)
+        else os.path.abspath(os.path.join(_repo_root, _raw_audit_path))
+    )
+else:
+    DEFAULT_AUDIT_LOG_PATH = os.path.join(
+        _repo_root,
+        "data",
+        "audit_trail.jsonl",
+    )
 GENESIS_PREV_HASH = "0" * 64
 
 
