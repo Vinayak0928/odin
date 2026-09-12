@@ -1067,6 +1067,8 @@ async def _startup_event():
                         data = resp.json()
                         m_list = [m["id"] for m in data.get("data", [])]
                         if m_list:
+                            preferred_fast = ["qwen2.5-coder:1.5b", "llama3.2:1b", "deepseek-r1:1.5b", "qwen2.5-coder:3b"]
+                            m_list.sort(key=lambda m: (preferred_fast.index(m) if m in preferred_fast else 99))
                             db = _SL()
                             try:
                                 ep = db.query(_ME).filter(_ME.base_url.like("%11434%")).first()
@@ -1091,10 +1093,11 @@ async def _startup_event():
                                     db.commit()
                                 
                                 settings = _ls()
-                                if not settings.get("default_endpoint_id") or not settings.get("default_model"):
+                                if not settings.get("default_endpoint_id"):
                                     settings["default_endpoint_id"] = ep.id
+                                if not settings.get("default_model") or settings.get("default_model") not in m_list:
                                     settings["default_model"] = m_list[0]
-                                    _ss(settings)
+                                _ss(settings)
                             finally:
                                 db.close()
                 except Exception:

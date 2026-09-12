@@ -21,8 +21,9 @@ _CONNECT_TIMEOUT = float(os.getenv("CHROMADB_CONNECT_TIMEOUT", "2.0"))
 
 def _port_open(host: str, port: int, timeout: float = None) -> bool:
     """Return True if a TCP connection to host:port succeeds within timeout."""
+    target_host = "127.0.0.1" if host in ("localhost", "127.0.0.1") else host
     try:
-        with socket.create_connection((host, port), timeout=timeout or _CONNECT_TIMEOUT):
+        with socket.create_connection((target_host, port), timeout=timeout or _CONNECT_TIMEOUT):
             return True
     except OSError:
         return False
@@ -33,26 +34,32 @@ def _try_auto_start_chroma(host: str, port: int) -> bool:
     if host not in ("localhost", "127.0.0.1"):
         return False
 
+    import sys
     import subprocess
     import shutil
     import time
     from src.constants import DATA_DIR
 
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    candidates = [
-        os.path.join(base_dir, "venv", "Scripts", "chroma.exe"),
-        os.path.join(base_dir, "venv", "bin", "chroma"),
-        shutil.which("chroma.exe"),
-        shutil.which("chroma"),
-    ]
-    chroma_exe = next((c for c in candidates if c and os.path.exists(c)), None)
-    if not chroma_exe:
-        logger.warning("Local chroma executable not found; cannot auto-start ChromaDB")
-        return False
-
     chroma_data = os.path.join(DATA_DIR, "chroma")
     os.makedirs(chroma_data, exist_ok=True)
-    logger.info("Auto-starting local ChromaDB service on %s:%s using %s...", host, port, chroma_exe)
+
+    venv_py = os.path.join(base_dir, "venv", "Scripts", "python.exe")
+    if not os.path.exists(venv_py):
+        venv_py = os.path.join(base_dir, "venv", "bin", "python")
+
+    python_exe = venv_py if os.path.exists(venv_py) else sys.executable
+    if not python_exe:
+        logger.warning("Local Python executable not found; cannot auto-start ChromaDB")
+        return False
+
+    chroma_script = (
+        f"import sys; sys.argv=['chroma', 'run', '--path', r'{chroma_data}', '--port', '{port}', '--host', '127.0.0.1']; "
+        f"from chromadb.cli.cli import app; app()"
+    )
+    cmd = [python_exe, "-c", chroma_script]
+
+    logger.info("Auto-starting local ChromaDB service on 127.0.0.1:%s using %s...", port, python_exe)
 
     creationflags = 0
     if os.name == "nt":
@@ -60,7 +67,7 @@ def _try_auto_start_chroma(host: str, port: int) -> bool:
 
     try:
         subprocess.Popen(
-            [chroma_exe, "run", "--path", chroma_data, "--port", str(port)],
+            cmd,
             creationflags=creationflags,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -69,10 +76,10 @@ def _try_auto_start_chroma(host: str, port: int) -> bool:
         logger.warning("Failed to spawn ChromaDB subprocess: %s", e)
         return False
 
-    for _ in range(16):
-        time.sleep(0.5)
-        if _port_open(host, port, timeout=0.8):
-            logger.info("Local ChromaDB service successfully started and ready on %s:%s", host, port)
+    for _ in range(20):
+        time.sleep(0.25)
+        if _port_open("127.0.0.1", port, timeout=0.5):
+            logger.info("Local ChromaDB service successfully started and ready on 127.0.0.1:%s", port)
             return True
 
     return False

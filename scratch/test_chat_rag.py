@@ -1,5 +1,7 @@
-import sys, os
-sys.path.insert(0, os.path.abspath('.'))
+import sys
+from pathlib import Path
+BASE_DIR_PATH = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BASE_DIR_PATH))
 import asyncio
 from core.session_manager import SessionManager
 from src.constants import SESSIONS_FILE, BASE_DIR
@@ -17,8 +19,10 @@ async def test():
             session_id='test-sess-1',
             endpoint_url='http://localhost:11434/v1',
             name='Test MRPL',
-            model='qwen3.5:4b'
+            model='qwen2.5-coder:3b'
         )
+    sess.model = 'qwen2.5-coder:3b'
+    sess.endpoint_url = 'http://localhost:11434/v1'
     class MockState:
         user = 'admin'
     class MockRequest:
