@@ -222,7 +222,7 @@ class PersonalDocsManager:
 
     def __init__(self, personal_dir: str, rag_manager=None):
         self.personal_dir = personal_dir
-        self.rag_manager = rag_manager
+        self._rag_manager = rag_manager
         self.index = []
         self.indexed_directories = []  # Track additional directories
         self.excluded_files: Set[str] = set()  # Files removed from RAG listing
@@ -231,6 +231,20 @@ class PersonalDocsManager:
         self.load_directories()
         self._load_excluded()
         self.refresh_index()
+
+    @property
+    def rag_manager(self):
+        if self._rag_manager is not None:
+            return self._rag_manager
+        try:
+            from src.rag_singleton import get_rag_manager
+            return get_rag_manager()
+        except Exception:
+            return None
+
+    @rag_manager.setter
+    def rag_manager(self, value):
+        self._rag_manager = value
 
     def load_directories(self):
         """Load the list of indexed directories from persistent storage."""

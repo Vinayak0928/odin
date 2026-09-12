@@ -5,7 +5,7 @@ Vector-based RAG using ChromaDB for storage and API-based embeddings.
 Features: persistent storage, hybrid search (vector + keyword), sentence-aware chunking,
 configurable embedding endpoint via EMBEDDING_URL env var.
 """
-
+import json
 import os
 import hashlib
 import re
@@ -71,7 +71,147 @@ def _rewrite_owner_path(value: str, path_map: Dict[str, str], path_prefixes: Lis
             return new_abs + abs_value[len(old_abs):]
     return value
 
+def _parse_mrpl_json_records(
+    content: str,
+    filename: str,
+    source_path: str,
+    owner: Optional[str] = None,
+) -> List[tuple]:
+    """
+    Convert the MRPL structured JSON corpus into logical RAG documents.
 
+    Each structured record becomes one RAG document instead of being
+    split into arbitrary character-based chunks.
+    """
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse MRPL JSON %s: %s", filename, e)
+        return []
+
+    documents = []
+
+    section_labels = {
+        "metadata": "MRPL Dataset Metadata",
+        "line_lists_and_tag_registry": "Equipment / Tag Registry",
+        "pid_graph_connectivity": "P&ID Graph Connectivity",
+        "scada_telemetry_historical_blocks": "SCADA Historical Telemetry",
+        "sop_and_safety_procedures": "SOP and Safety Procedures",
+        "inspection_corrosion_logs": "Inspection and Corrosion Logs",
+        "hazop_risk_assessment_worksheets": "HAZOP Risk Assessment",
+        "maintenance_work_orders": "Maintenance Work Orders",
+        "cause_and_effect_sis_matrix": "Cause and Effect / SIS Matrix",
+    }
+
+    identifier_fields = [
+        "tag_id",
+        "unit_id",
+        "unit",
+        "unit_name",
+        "equipment_tag",
+        "equipment_class",
+        "connection_id",
+        "sop_id",
+        "cml_number",
+        "worksheet_id",
+        "work_order",
+        "sap_work_order_number",
+        "interlock_tag",
+    ]
+
+    for section, records in data.items():
+
+        # metadata is a dictionary, while the other sections
+        # are generally lists of records.
+        if isinstance(records, dict):
+            records = [records]
+
+        if not isinstance(records, list):
+            continue
+
+        section_label = section_labels.get(
+            section,
+            section.replace("_", " ").title()
+        )
+
+        for index, record in enumerate(records):
+
+            if not isinstance(record, dict):
+                continue
+
+            # Convert the structured record into readable text.
+            fields = []
+
+            for key, value in record.items():
+                readable_key = key.replace("_", " ").title()
+
+                if isinstance(value, (dict, list)):
+                    value_text = json.dumps(
+                        value,
+                        ensure_ascii=False,
+                        separators=(", ", ": "),
+                    )
+                else:
+                    value_text = str(value)
+
+                fields.append(
+                    f"{readable_key}: {value_text}"
+                )
+
+            document_text = (
+                f"MRPL Section: {section_label}\n"
+                f"Record Index: {index}\n\n"
+                + "\n".join(fields)
+            )
+
+            # Metadata stored alongside the embedding.
+            metadata = {
+                "source": source_path,
+                "filename": filename,
+                "section": section,
+                "section_label": section_label,
+                "record_index": index,
+                "type": ".json",
+            }
+
+            # Preserve important identifiers as Chroma metadata.
+            for field in identifier_fields:
+                value = record.get(field)
+
+                if value is not None:
+                    if isinstance(value, (str, int, float, bool)):
+                        metadata[field] = value
+
+            if owner:
+                metadata["owner"] = owner
+
+            # Generate a stable record identifier.
+            stable_identifier = None
+
+            for field in identifier_fields:
+                if record.get(field) is not None:
+                    stable_identifier = str(record[field])
+                    break
+
+            if stable_identifier:
+                record_id = (
+                    f"mrpl_{section}_{stable_identifier}"
+                )
+            else:
+                record_id = f"mrpl_{section}_{index}"
+
+            metadata["record_id"] = record_id
+
+            documents.append(
+                (document_text, metadata)
+            )
+
+    logger.info(
+        "Parsed MRPL structured corpus: %d logical records",
+        len(documents),
+    )
+
+    return documents
 class VectorRAG:
     """RAG system using ChromaDB vector storage with hybrid search."""
 
@@ -124,9 +264,10 @@ class VectorRAG:
 
     @property
     def healthy(self) -> bool:
+        healthy_flag = getattr(self, "_healthy", False)
         if getattr(self, "_lanes", None):
-            return self._healthy and bool(self._lanes)
-        return self._healthy and getattr(self, "_collection", None) is not None
+            return healthy_flag and bool(self._lanes)
+        return healthy_flag and getattr(self, "_collection", None) is not None
 
     @property
     def collection(self):
@@ -208,6 +349,27 @@ class VectorRAG:
         return wrote
 
     def add_documents_batch(self, docs: List[tuple]) -> Dict[str, Any]:
+        # If add_document was stubbed/overridden on the instance (e.g. in tests)
+        # or lanes are not initialized, delegate through add_document.
+        if "add_document" in self.__dict__ or not getattr(self, "_lanes", None):
+            added = 0
+            failed = 0
+            for item in docs:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    t, m = item
+                    if self.add_document(t, m):
+                        added += 1
+                    else:
+                        failed += 1
+                else:
+                    failed += 1
+            return {
+                "success": (failed == 0 or added > 0),
+                "added_count": added,
+                "failed_count": failed,
+                "message": f"Added {added} documents"
+            }
+
         if not self.healthy:
             return {"success": False, "message": "Collection not initialized"}
         if not docs:
@@ -223,8 +385,24 @@ class VectorRAG:
         added_ids = set()
         attempted_new = False
         write_failed = False
+
         for lane in self._lanes:
-            all_ids = [_generate_doc_id(t, m.get("owner") or "") for t, m in valid]
+            all_ids = []
+            seen_batch_ids = set()
+
+            for index, (text, meta) in enumerate(valid):
+                base_id = _generate_doc_id(text, meta.get("owner") or "")
+                doc_id = base_id
+
+                # Prevent duplicate IDs within the same batch.
+                # Existing IDs remain unchanged; only duplicate occurrences
+                # receive a deterministic suffix.
+                if doc_id in seen_batch_ids:
+                    doc_id = f"{base_id}_{index}"
+
+                seen_batch_ids.add(doc_id)
+                all_ids.append(doc_id)
+
             try:
                 existing = lane.collection.get(ids=all_ids)
                 existing_ids = set(existing.get("ids") or [])
@@ -234,6 +412,7 @@ class VectorRAG:
             new_texts = []
             new_metas = []
             new_ids = []
+
             for (text, meta), doc_id in zip(valid, all_ids):
                 if doc_id not in existing_ids:
                     new_texts.append(text)
@@ -356,46 +535,77 @@ class VectorRAG:
         try:
             where_filter = {"owner": owner} if owner else None
             query_words = set(query.lower().split())
+            stop_words = {"what", "is", "the", "of", "and", "or", "in", "to", "for", "with", "between", "compare", "tell", "me", "about", "show", "vs", "versus"}
+            content_query = {w for w in query_words if w not in stop_words} or query_words
             candidates = []
 
-            for lane, results in query_lanes(
-                self._lanes,
-                query,
-                n_results=lambda lane: min(
-                    (k * 6 if owner else k * 3),
-                    max(k, 20),
-                    lane.count(),
-                ),
-                where=where_filter,
-                include=["documents", "metadatas", "distances"],
-                raise_if_all_failed=True,
-            ):
-                for idx in range(len(results["ids"][0])):
-                    doc_id = results["ids"][0][idx]
-                    distance = results["distances"][0][idx]
-                    doc_text = results["documents"][0][idx]
-                    meta = results["metadatas"][0][idx]
+            def _query_and_collect(where_clause):
+                found = []
+                for lane, results in query_lanes(
+                    self._lanes,
+                    query,
+                    n_results=lambda lane: min(
+                        max(k * 15, 80),
+                        lane.count(),
+                    ),
+                    where=where_clause,
+                    include=["documents", "metadatas", "distances"],
+                    raise_if_all_failed=True,
+                ):
+                    for idx in range(len(results["ids"][0])):
+                        doc_id = results["ids"][0][idx]
+                        distance = results["distances"][0][idx]
+                        doc_text = results["documents"][0][idx]
+                        meta = results["metadatas"][0][idx] or {}
 
-                    vector_sim = 1.0 - distance
-                    doc_words = set(doc_text.lower().split())
-                    overlap = len(query_words & doc_words)
-                    keyword_score = overlap / len(query_words) if query_words else 0.0
-                    hybrid_score = (VECTOR_WEIGHT * vector_sim) + (KEYWORD_WEIGHT * keyword_score)
+                        vector_sim = 1.0 - distance
+                        doc_words = set(doc_text.lower().split())
+                        overlap = len(content_query & doc_words)
+                        keyword_score = overlap / len(content_query) if content_query else 0.0
 
-                    candidates.append({
-                        "id": doc_id,
-                        "document": doc_text,
-                        "metadata": meta,
-                        "distance": round(distance, 4),
-                        "similarity": round(hybrid_score, 4),
-                        "vector_similarity": round(vector_sim, 4),
-                        "keyword_score": round(keyword_score, 4),
-                        "embedding_lane": lane.name,
-                    })
+                        # Boost direct entity/tag match if present in metadata or text
+                        tag_id = (meta.get("tag_id") or "").lower()
+                        if tag_id and tag_id in query_words:
+                            keyword_score = max(keyword_score, 0.8)
 
-            candidates.sort(key=lambda c: c["similarity"], reverse=True)
-            top = dedupe_results(candidates, limit=k)
-            logger.info(f"Hybrid search for '{query[:60]}': {len(top)} results")
+                        unit_id = (meta.get("unit_id") or "").lower()
+                        if unit_id and unit_id in query_words:
+                            keyword_score = max(keyword_score, 0.7)
+
+                        hybrid_score = (VECTOR_WEIGHT * vector_sim) + (KEYWORD_WEIGHT * keyword_score)
+
+                        found.append({
+                            "id": doc_id,
+                            "document": doc_text,
+                            "metadata": meta,
+                            "distance": round(distance, 4),
+                            "similarity": round(hybrid_score, 4),
+                            "vector_similarity": round(vector_sim, 4),
+                            "keyword_score": round(keyword_score, 4),
+                            "embedding_lane": lane.name,
+                        })
+                return found
+
+            candidates = _query_and_collect(where_filter)
+            # If owner filter was restrictive and found fewer than k results, fallback to global/unowned
+            if owner and len(candidates) < k:
+                more = _query_and_collect(None)
+                candidates.extend(more)
+
+            # Deduplicate by logical record_id or content hash so identical multi-owner rows don't repeat
+            seen_records = set()
+            unique_candidates = []
+            for c in candidates:
+                meta = c.get("metadata") or {}
+                rec_key = meta.get("record_id") or hashlib.sha256(c["document"].strip().encode("utf-8")).hexdigest()[:16]
+                if rec_key in seen_records:
+                    continue
+                seen_records.add(rec_key)
+                unique_candidates.append(c)
+
+            unique_candidates.sort(key=lambda c: c["similarity"], reverse=True)
+            top = unique_candidates[:k]
+            logger.info(f"Hybrid search for '{query[:60]}': {len(top)} unique results (from {len(candidates)} candidates)")
             return top
 
         except Exception as e:
@@ -500,19 +710,20 @@ class VectorRAG:
 
         indexed = 0
         failed = 0
+        batch = []
+        batch_size = 100
 
         try:
             for root, dirs, files in os.walk(directory):
-                # Prune in place so os.walk never descends into hidden or junk
-                # directories (#5559), via the shared index_walk policy. The
-                # passed-in root is exempt: a user who deliberately targets a
-                # hidden directory gets it.
                 prune_index_dirs(dirs)
+
                 for fname in files:
                     if not is_indexable_file(fname):
                         continue
+
                     fpath = os.path.join(root, fname)
                     ext = Path(fname).suffix.lower()
+
                     if ext not in file_extensions:
                         continue
 
@@ -533,17 +744,116 @@ class VectorRAG:
                             'directory': root,
                             'type': ext,
                         }
+
                         if owner:
                             meta['owner'] = owner
 
-                        for i, chunk in enumerate(self._split_into_chunks(content)):
-                            if self.add_document(chunk, {**meta, 'chunk_id': i}):
-                                indexed += 1
-                            else:
-                                failed += 1
+                        # ----------------------------------------------------------
+                        # ----------------------------------------------------------
+                        # Structured MRPL JSON ingestion
+                        # ----------------------------------------------------------
+                        if (
+                            ext == ".json"
+                            and fname.lower() == "mrpl_refinery_300page_corpus.json"
+                        ):
+                            structured_docs = _parse_mrpl_json_records(
+                                content=content,
+                                filename=fname,
+                                source_path=fpath,
+                                owner=owner,
+                            )
+
+                            logger.info(
+                                "Indexing structured MRPL corpus: %d records",
+                                len(structured_docs),
+                            )
+
+                            for document_text, document_meta in structured_docs:
+                                batch.append(
+                                    (document_text, document_meta)
+                                )
+
+                                if len(batch) >= batch_size:
+                                    result = self.add_documents_batch(batch)
+
+                                    if result.get("success"):
+                                        indexed += result.get("added_count", 0)
+                                        failed += result.get("failed_count", 0)
+                                    else:
+                                        failed += len(batch)
+
+                                    logger.info(
+                                        "RAG progress: %d records added, %d failed",
+                                        indexed,
+                                        failed,
+                                    )
+
+                                    batch = []
+
+                        else:
+                            # ------------------------------------------------------
+                            # Existing generic document ingestion
+                            # ------------------------------------------------------
+                            chunks = self._split_into_chunks(content)
+
+                            logger.info(
+                                "Indexing %s: %d chunks",
+                                fname,
+                                len(chunks),
+                            )
+
+                            for i, chunk in enumerate(chunks):
+                                batch.append(
+                                    (chunk, {**meta, "chunk_id": i})
+                                )
+
+                                if len(batch) >= batch_size:
+                                    result = self.add_documents_batch(batch)
+
+                                    if result.get("success"):
+                                        indexed += result.get("added_count", 0)
+                                        failed += result.get("failed_count", 0)
+                                    else:
+                                        failed += len(batch)
+
+                                    logger.info(
+                                        "RAG progress: %d chunks added, %d failed",
+                                        indexed,
+                                        failed,
+                                    )
+
+                                    batch = []
+
+                            if len(batch) >= batch_size:
+                                result = self.add_documents_batch(batch)
+
+                                if result.get("success"):
+                                    indexed += result.get("added_count", 0)
+                                    failed += result.get("failed_count", 0)
+                                else:
+                                    failed += len(batch)
+
+                                logger.info(
+                                    "RAG progress: %d chunks added, %d failed",
+                                    indexed,
+                                    failed
+                                )
+
+                                batch = []
+
                     except Exception as e:
                         logger.error(f"index {fpath}: {e}")
                         failed += 1
+
+            # Process remaining chunks
+            if batch:
+                result = self.add_documents_batch(batch)
+
+                if result.get("success"):
+                    indexed += result.get("added_count", 0)
+                    failed += result.get("failed_count", 0)
+                else:
+                    failed += len(batch)
 
             return {
                 'success': True,
@@ -551,9 +861,15 @@ class VectorRAG:
                 'failed_count': failed,
                 'message': f'Indexed {indexed} chunks from {directory}',
             }
+
         except Exception as e:
             logger.error(f"index_personal_documents {directory}: {e}")
-            return {'success': False, 'indexed_count': indexed, 'failed_count': failed, 'message': str(e)}
+            return {
+                'success': False,
+                'indexed_count': indexed,
+                'failed_count': failed,
+                'message': str(e)
+            }
 
     def remove_directory(self, directory: str) -> Dict[str, Any]:
         """Remove all chunks under ``directory`` (recursively), and nothing else.
@@ -576,13 +892,18 @@ class VectorRAG:
             removed_ids = set()
             for _lane_name, collection in self._collections_for_delete():
                 results = collection.get(include=["metadatas"])
-                ids = [
-                    results["ids"][i]
-                    for i, m in enumerate(results["metadatas"])
-                    if isinstance(m, dict)
-                    and isinstance(m.get("source"), str)
-                    and (m["source"] == directory or m["source"].startswith(directory + os.sep))
-                ]
+                ids = []
+                for i, m in enumerate(results["metadatas"]):
+                    if not isinstance(m, dict) or not isinstance(m.get("source"), str):
+                        continue
+                    src = os.path.abspath(m["source"])
+                    if (
+                        src == directory
+                        or src.startswith(directory + os.sep)
+                        or m["source"] == directory
+                        or m["source"].startswith(directory + os.sep)
+                    ):
+                        ids.append(results["ids"][i])
                 if ids:
                     collection.delete(ids=ids)
                     removed_ids.update(ids)

@@ -92,7 +92,7 @@ services:
     ports:
       - "${CHROMADB_BIND:-127.0.0.1}:8100:8000"
     volumes:
-      - chromadb-data:/chroma/chroma
+      - ${CHROMADB_DATA_DIR:-./data/chroma}:/chroma/chroma
     environment:
       - ANONYMIZED_TELEMETRY=FALSE
     restart: unless-stopped

@@ -1,6 +1,7 @@
 # src/chat_processor.py
 import logging
 import math
+import os
 import re
 import time
 from collections import Counter
@@ -88,7 +89,7 @@ class ChatProcessor:
         self.skills_manager = skills_manager
 
     # Minimum similarity score for RAG results to be injected
-    RAG_SIMILARITY_THRESHOLD = 0.35
+    RAG_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.25"))
     MEMORY_CONTEXT_LIMIT = 5
     PINNED_MEMORY_LIMIT = MEMORY_CONTEXT_LIMIT
 
