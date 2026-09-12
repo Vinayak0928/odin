@@ -254,10 +254,14 @@ def get_embedding_client():
             os.environ["EMBEDDING_MODEL"] = model
         if api_key:
             from src.secret_storage import decrypt
-            os.environ["EMBEDDING_API_KEY"] = decrypt(api_key)
+    use_local = (
+        os.getenv("EMBEDDING_PROVIDER", "").lower() in ("local_bge", "fastembed", "local")
+        or os.getenv("USE_LOCAL_EMBEDDINGS", "").lower() == "true"
+        or (not os.getenv("EMBEDDING_URL") and not persisted.get("url"))
+    )
     # Try the HTTP embedding API — unless we already found it down this process
-    # (avoids paying the connect timeout again on every RAG/memory/tool probe).
-    if not _http_embed_down:
+    # or local embeddings are explicitly configured.
+    if not use_local and not _http_embed_down:
         try:
             client = EmbeddingClient()
             client.get_sentence_embedding_dimension()  # health check

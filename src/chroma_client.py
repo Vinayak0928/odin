@@ -28,6 +28,56 @@ def _port_open(host: str, port: int, timeout: float = None) -> bool:
         return False
 
 
+def _try_auto_start_chroma(host: str, port: int) -> bool:
+    """Attempt to auto-launch local ChromaDB service if installed."""
+    if host not in ("localhost", "127.0.0.1"):
+        return False
+
+    import subprocess
+    import shutil
+    import time
+    from src.constants import DATA_DIR
+
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    candidates = [
+        os.path.join(base_dir, "venv", "Scripts", "chroma.exe"),
+        os.path.join(base_dir, "venv", "bin", "chroma"),
+        shutil.which("chroma.exe"),
+        shutil.which("chroma"),
+    ]
+    chroma_exe = next((c for c in candidates if c and os.path.exists(c)), None)
+    if not chroma_exe:
+        logger.warning("Local chroma executable not found; cannot auto-start ChromaDB")
+        return False
+
+    chroma_data = os.path.join(DATA_DIR, "chroma")
+    os.makedirs(chroma_data, exist_ok=True)
+    logger.info("Auto-starting local ChromaDB service on %s:%s using %s...", host, port, chroma_exe)
+
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = subprocess.CREATE_NO_WINDOW
+
+    try:
+        subprocess.Popen(
+            [chroma_exe, "run", "--path", chroma_data, "--port", str(port)],
+            creationflags=creationflags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        logger.warning("Failed to spawn ChromaDB subprocess: %s", e)
+        return False
+
+    for _ in range(16):
+        time.sleep(0.5)
+        if _port_open(host, port, timeout=0.8):
+            logger.info("Local ChromaDB service successfully started and ready on %s:%s", host, port)
+            return True
+
+    return False
+
+
 def get_chroma_client():
     """Get or create the singleton ChromaDB HTTP client.
 
@@ -50,11 +100,12 @@ def get_chroma_client():
     port = int(os.getenv("CHROMADB_PORT", "8100"))
 
     if not _port_open(host, port):
-        raise RuntimeError(
-            f"ChromaDB is not reachable at {host}:{port}. Start the ChromaDB "
-            f"service (e.g. `docker compose up chromadb`) or set CHROMADB_HOST / "
-            f"CHROMADB_PORT to point at a running instance."
-        )
+        if not _try_auto_start_chroma(host, port):
+            raise RuntimeError(
+                f"ChromaDB is not reachable at {host}:{port}. Start the ChromaDB "
+                f"service (e.g. `docker compose up chromadb` or `run-chromadb.bat`) or set CHROMADB_HOST / "
+                f"CHROMADB_PORT to point at a running instance."
+            )
 
     client = chromadb.HttpClient(host=host, port=port)
 

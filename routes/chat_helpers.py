@@ -704,8 +704,9 @@ async def build_chat_context(
     if incognito or not allow_tool_preprocessing or is_research_spinoff or casual_low_signal:
         use_rag_val = False
 
-    # If pre-fetched search context was provided (compare mode), skip live web search
-    skip_web = bool(search_context) or not allow_tool_preprocessing or casual_low_signal
+    # If pre-fetched search context was provided (compare mode) or airgap mode enforced, skip live web search
+    airgap_mode = os.getenv("MRPL_AIRGAP_ENFORCED", "").lower() in ("true", "1") or os.getenv("ALLOW_EXTERNAL_LLM_APIS", "").lower() == "false"
+    skip_web = bool(search_context) or not allow_tool_preprocessing or casual_low_signal or (airgap_mode and not use_web)
 
     # Build context preface
     # The stream path uses enhanced_message (with CoT/preprocessing applied),
