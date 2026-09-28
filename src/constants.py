@@ -9,7 +9,15 @@ APP_VERSION = "1.0.3"
 # Base paths
 BASE_DIR = os.path.join(get_app_root(), "")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
-DATA_DIR = os.getenv("ODYSSEUS_DATA_DIR", get_default_data_dir())
+_env_data_dir = os.getenv("ODYSSEUS_DATA_DIR")
+if _env_data_dir:
+    DATA_DIR = (
+        _env_data_dir
+        if os.path.isabs(_env_data_dir)
+        else os.path.abspath(os.path.join(get_app_root(), _env_data_dir))
+    )
+else:
+    DATA_DIR = get_default_data_dir()
 
 # Data file paths
 # Single source of truth: every persisted file/dir lives under DATA_DIR, which

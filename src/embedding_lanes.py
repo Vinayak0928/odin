@@ -256,12 +256,14 @@ def build_embedding_lanes(base_name: str) -> List[EmbeddingLane]:
     chroma_client = get_chroma_client()
     lanes: List[EmbeddingLane] = []
 
-    try:
-        custom = _build_custom_client()
-        if custom is not None:
-            lanes.append(_create_lane(chroma_client, base_name, LANE_CUSTOM, custom))
-    except Exception as e:
-        logger.warning("Custom embedding lane unavailable for %s: %s", base_name, e)
+    custom_ep = _load_custom_endpoint()
+    if custom_ep.get("url"):
+        try:
+            custom = _build_custom_client()
+            if custom is not None:
+                lanes.append(_create_lane(chroma_client, base_name, LANE_CUSTOM, custom))
+        except Exception as e:
+            logger.warning("Custom embedding lane unavailable for %s: %s", base_name, e)
 
     try:
         fastembed = _build_fastembed_client()

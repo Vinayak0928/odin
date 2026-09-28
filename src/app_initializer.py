@@ -82,6 +82,11 @@ def initialize_managers(base_dir: str, rag_manager=None) -> Dict[str, Any]:
     session_manager.upload_handler = upload_handler
     set_upload_handler(upload_handler)
     personal_docs_manager = PersonalDocsManager(PERSONAL_DIR, rag_manager)
+    if os.path.exists(AGENT_WORKSPACE_DIR):
+        try:
+            personal_docs_manager.add_directory(AGENT_WORKSPACE_DIR, index=False)
+        except Exception as e:
+            logger.warning(f"Failed to auto-track agent workspace: {e}")
     api_key_manager = APIKeyManager(DATA_DIR)
     preset_manager = PresetManager(DATA_DIR)
 

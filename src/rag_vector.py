@@ -105,18 +105,21 @@ def _parse_mrpl_json_records(
 
     identifier_fields = [
         "tag_id",
-        "unit_id",
-        "unit",
-        "unit_name",
-        "equipment_tag",
-        "equipment_class",
-        "connection_id",
         "sop_id",
         "cml_number",
         "worksheet_id",
-        "work_order",
+        "sap_work_order_num",
         "sap_work_order_number",
+        "work_order",
         "interlock_tag",
+        "connection_id",
+        "equipment_tag",
+        "from_tag",
+        "to_tag",
+        "unit_id",
+        "unit",
+        "unit_name",
+        "equipment_class",
     ]
 
     for section, records in data.items():
@@ -534,10 +537,89 @@ class VectorRAG:
 
         try:
             where_filter = {"owner": owner} if owner else None
-            query_words = set(query.lower().split())
-            stop_words = {"what", "is", "the", "of", "and", "or", "in", "to", "for", "with", "between", "compare", "tell", "me", "about", "show", "vs", "versus"}
-            content_query = {w for w in query_words if w not in stop_words} or query_words
+            query_lower = query.lower()
+            query_tokens = set(re.findall(r"[A-Za-z0-9_\-]+", query_lower))
+            stop_words = {
+                "what", "is", "the", "of", "and", "or", "in", "to", "for", "with",
+                "between", "compare", "tell", "me", "about", "show", "vs", "versus",
+                "can", "you", "data", "from", "please", "explain", "find", "get", "give"
+            }
+            content_query = {w for w in query_tokens if w not in stop_words} or query_tokens
             candidates = []
+
+            # 1. Exact entity / tag extraction from query
+            entity_codes = re.findall(r"\b[A-Za-z0-9]+[_\-][A-Za-z0-9_\-]+\b", query)
+            exact_matches = []
+            if entity_codes and self._lanes:
+                for code in entity_codes:
+                    code_str = code.strip()
+                    if len(code_str) < 3:
+                        continue
+                    for lane in self._lanes:
+                        try:
+                            res = lane.collection.get(where_document={"$contains": code_str}, limit=10)
+                            if res and res.get("ids"):
+                                for i, doc_id in enumerate(res["ids"]):
+                                    meta = res["metadatas"][i] or {}
+                                    if owner and meta.get("owner") and meta.get("owner") != owner:
+                                        continue
+                                    exact_matches.append({
+                                        "id": doc_id,
+                                        "document": res["documents"][i],
+                                        "metadata": meta,
+                                        "distance": 0.05,
+                                        "similarity": 0.95,
+                                        "vector_similarity": 0.95,
+                                        "keyword_score": 1.0,
+                                        "embedding_lane": lane.name,
+                                    })
+                        except Exception:
+                            pass
+
+            # 2. Targeted section detection for specialized engineering records
+            targeted_sections = []
+            if {"hazop", "deviation", "credible", "guide", "nodal", "safeguard", "node"} & query_tokens:
+                targeted_sections.append("hazop_risk_assessment_worksheets")
+            if {"sop", "procedure", "controlled", "protective", "ppe"} & query_tokens:
+                targeted_sections.append("sop_and_safety_procedures")
+            if {"work", "order", "wo", "maintenance", "repair", "overhaul", "job", "spare", "parts", "sap"} & query_tokens:
+                targeted_sections.append("maintenance_work_orders")
+            if {"corrosion", "thickness", "cml", "ndt", "remaining", "mpy", "inspection", "degradation"} & query_tokens:
+                targeted_sections.append("inspection_corrosion_logs")
+            if {"interlock", "sis", "esd", "trip", "sil", "voting", "sensor"} & query_tokens:
+                targeted_sections.append("cause_and_effect_sis_matrix")
+            if {"pid", "p&id", "pipe", "fluid", "stream", "connection"} & query_tokens:
+                targeted_sections.append("pid_graph_connectivity")
+
+            section_matches = []
+            if targeted_sections and self._lanes:
+                for target_sec in targeted_sections:
+                    for lane in self._lanes:
+                        try:
+                            sec_where = {"section": target_sec}
+                            if owner:
+                                sec_where = {"$and": [{"section": target_sec}, {"owner": owner}]}
+                            s_res = lane.collection.get(where=sec_where, limit=100)
+                            if s_res and s_res.get("ids"):
+                                for i, doc_id in enumerate(s_res["ids"]):
+                                    doc_text = s_res["documents"][i]
+                                    meta = s_res["metadatas"][i] or {}
+                                    doc_tokens = set(re.findall(r"[A-Za-z0-9_\-]+", doc_text.lower()))
+                                    overlap = len(content_query & doc_tokens)
+                                    kw_score = (overlap / len(content_query)) if content_query else 0.0
+                                    if kw_score > 0:
+                                        section_matches.append({
+                                            "id": doc_id,
+                                            "document": doc_text,
+                                            "metadata": meta,
+                                            "distance": 0.1,
+                                            "similarity": round(min(0.6 + kw_score * 0.4, 0.98), 4),
+                                            "vector_similarity": 0.85,
+                                            "keyword_score": round(kw_score, 4),
+                                            "embedding_lane": lane.name,
+                                        })
+                        except Exception:
+                            pass
 
             def _query_and_collect(where_clause):
                 found = []
@@ -545,7 +627,7 @@ class VectorRAG:
                     self._lanes,
                     query,
                     n_results=lambda lane: min(
-                        max(k * 15, 80),
+                        max(k * 20, 100),
                         lane.count(),
                     ),
                     where=where_clause,
@@ -559,20 +641,52 @@ class VectorRAG:
                         meta = results["metadatas"][0][idx] or {}
 
                         vector_sim = 1.0 - distance
-                        doc_words = set(doc_text.lower().split())
-                        overlap = len(content_query & doc_words)
+                        doc_tokens = set(re.findall(r"[A-Za-z0-9_\-]+", doc_text.lower()))
+                        overlap = len(content_query & doc_tokens)
                         keyword_score = overlap / len(content_query) if content_query else 0.0
 
-                        # Boost direct entity/tag match if present in metadata or text
-                        tag_id = (meta.get("tag_id") or "").lower()
-                        if tag_id and tag_id in query_words:
-                            keyword_score = max(keyword_score, 0.8)
+                        # Check primary identifier fields
+                        ID_FIELDS = (
+                            "tag_id", "equipment_tag", "from_tag", "to_tag",
+                            "cml_number", "sop_id", "worksheet_id", "sap_work_order_num",
+                            "work_order", "sap_work_order_number", "interlock_tag", "connection_id"
+                        )
+                        for fld in ID_FIELDS:
+                            val = str(meta.get(fld) or "").strip().lower()
+                            if val and (val in query_tokens or val in query_lower):
+                                keyword_score = max(keyword_score, 0.95)
 
-                        unit_id = (meta.get("unit_id") or "").lower()
-                        if unit_id and unit_id in query_words:
-                            keyword_score = max(keyword_score, 0.7)
+                        unit_id = str(meta.get("unit_id") or meta.get("unit") or "").strip().lower()
+                        if unit_id and (unit_id in query_tokens or unit_id in query_lower):
+                            keyword_score = max(keyword_score, 0.75)
+
+                        # Section keyword alignment
+                        sec = str(meta.get("section") or "")
+                        if sec == "scada_telemetry_historical_blocks":
+                            if not ({"scada", "telemetry", "trend", "amps", "transmitter"} & query_tokens):
+                                keyword_score *= 0.3
+                        elif sec == "inspection_corrosion_logs":
+                            if {"corrosion", "thickness", "cml", "ndt", "remaining", "mpy", "inspection", "degradation"} & query_tokens:
+                                keyword_score = max(keyword_score, 0.85)
+                        elif sec == "hazop_risk_assessment_worksheets":
+                            if {"hazop", "deviation", "hazard", "nodal", "consequence", "safeguard", "risk", "node"} & query_tokens:
+                                keyword_score = max(keyword_score, 0.85)
+                        elif sec == "sop_and_safety_procedures":
+                            if {"sop", "procedure", "mitigation", "steps", "protective", "ppe", "controlled"} & query_tokens:
+                                keyword_score = max(keyword_score, 0.85)
+                        elif sec == "maintenance_work_orders":
+                            if {"work", "order", "wo", "maintenance", "repair", "overhaul", "job", "spare", "parts", "sap"} & query_tokens:
+                                keyword_score = max(keyword_score, 0.85)
+                        elif sec == "cause_and_effect_sis_matrix":
+                            if {"interlock", "sis", "esd", "trip", "sil", "voting", "sensor"} & query_tokens:
+                                keyword_score = max(keyword_score, 0.85)
+                        elif sec == "line_lists_and_tag_registry":
+                            if {"equipment", "tag", "metallurgy", "piping", "spec", "design", "operating", "column", "compressor", "vessel", "pump", "valve"} & query_tokens:
+                                keyword_score = max(keyword_score, 0.8)
 
                         hybrid_score = (VECTOR_WEIGHT * vector_sim) + (KEYWORD_WEIGHT * keyword_score)
+                        if keyword_score >= 0.85:
+                            hybrid_score = max(hybrid_score, keyword_score)
 
                         found.append({
                             "id": doc_id,
@@ -587,6 +701,11 @@ class VectorRAG:
                 return found
 
             candidates = _query_and_collect(where_filter)
+            if exact_matches:
+                candidates = exact_matches + candidates
+            if section_matches:
+                candidates = section_matches + candidates
+
             # If owner filter was restrictive and found fewer than k results, fallback to global/unowned
             if owner and len(candidates) < k:
                 more = _query_and_collect(None)

@@ -141,12 +141,12 @@ async def _local_model_slot(target_url: str, model: str, workload: Optional[str]
 
 class LLMConfig:
     """Configuration constants for LLM operations."""
-    DEFAULT_TIMEOUT = 30
+    DEFAULT_TIMEOUT = int(os.getenv("LLM_TIMEOUT", "180"))
     DEFAULT_TEMPERATURE = 1.0
     DEFAULT_MAX_TOKENS = 0
     MAX_RETRIES = 3
     RETRY_DELAY = 0.5
-    STREAM_TIMEOUT = 300
+    STREAM_TIMEOUT = int(os.getenv("LLM_STREAM_TIMEOUT", "300"))
     # TCP+TLS connect budget for a SINGLE attempt. The old hard-coded 3.0s
     # assumed LAN/Tailscale peers ('SYN in <100ms'); it is too tight for public
     # cloud endpoints (offshore APIs take ~0.5-1.5s cold, with jitter), so a
@@ -760,6 +760,9 @@ def _build_ollama_payload(
         options["num_predict"] = max_tokens
     if num_ctx is not None and num_ctx > 0 and num_ctx != DEFAULT_CONTEXT:
         options["num_ctx"] = num_ctx
+    num_threads = int(os.getenv("OLLAMA_NUM_THREADS", str(os.cpu_count() or 4)))
+    if num_threads > 0:
+        options["num_thread"] = num_threads
     if options:
         payload["options"] = options
     if tools:

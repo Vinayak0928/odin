@@ -1,8 +1,20 @@
 import sys
+import os
+from pathlib import Path
 sys.stdout.reconfigure(encoding='utf-8')
 from pypdf import PdfReader
 
-path = r'd:\odin-dev\odin-dev\data\uploads\2026\09\11\8d30edf4ce874432b738323afde14646.pdf'
+BASE_DIR = Path(__file__).resolve().parent.parent
+if len(sys.argv) > 1 and os.path.exists(sys.argv[1]):
+    path = sys.argv[1]
+else:
+    candidates = list((BASE_DIR / 'data' / 'uploads').glob('**/*.pdf'))
+    if not candidates:
+        print("No PDF files found in data/uploads. Pass a path as an argument: python test_pdf.py <file.pdf>")
+        sys.exit(0)
+    path = str(candidates[0])
+
+print(f"Loading PDF: {path}")
 reader = PdfReader(path)
 print(f"Total pages: {len(reader.pages)}")
 for i, page in enumerate(reader.pages):

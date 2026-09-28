@@ -48,16 +48,45 @@ if ($hasDocker) {
 Write-Host "[INFO] Docker is not available or not running on this host." -ForegroundColor Yellow
 Write-Host "[INFO] Falling back to local native ChromaDB service..." -ForegroundColor Yellow
 
+$pythonExe = Join-Path $ScriptDir "venv\Scripts\python.exe"
 $chromaExe = Join-Path $ScriptDir "venv\Scripts\chroma.exe"
 if (-not (Test-Path $chromaExe)) {
     $chromaExe = (Get-Command chroma.exe -ErrorAction SilentlyContinue).Source
 }
 
-if (-not $chromaExe -or -not (Test-Path $chromaExe)) {
-    Write-Host "[ERROR] Chroma CLI not found. Please install Docker Desktop or run: .\venv\Scripts\pip install chromadb" -ForegroundColor Red
-    exit 1
+$validPyExe = $null
+if (Test-Path $pythonExe) {
+    try {
+        $testOut = (& $pythonExe -c "import sys; print('ok')" 2>$null).Trim()
+        if ($testOut -eq "ok") { $validPyExe = $pythonExe }
+    } catch {
+        $validPyExe = $null
+    }
 }
 
-Write-Host "[SUCCESS] Launching local ChromaDB server on http://localhost:$Port..." -ForegroundColor Green
-Write-Host "Press Ctrl+C to stop the ChromaDB server." -ForegroundColor Gray
-& $chromaExe run --path "$DataPath" --port $Port
+if (-not $validPyExe) {
+    foreach ($cmd in @("py", "python")) {
+        $c = Get-Command $cmd -ErrorAction SilentlyContinue
+        if ($c) {
+            try {
+                $testOut = (& $c.Source -c "import sys; print('ok')" 2>$null).Trim()
+                if ($testOut -eq "ok") { $validPyExe = $c.Source; break }
+            } catch {}
+        }
+    }
+}
+
+if ($validPyExe) {
+    Write-Host "[SUCCESS] Launching local ChromaDB server on http://127.0.0.1:$Port..." -ForegroundColor Green
+    Write-Host "Press Ctrl+C to stop the ChromaDB server." -ForegroundColor Gray
+    & $validPyExe -m chromadb.cli.cli run --path "$DataPath" --port $Port --host 127.0.0.1
+    exit 0
+} elseif ($chromaExe -and (Test-Path $chromaExe)) {
+    Write-Host "[SUCCESS] Launching local ChromaDB server on http://127.0.0.1:$Port..." -ForegroundColor Green
+    Write-Host "Press Ctrl+C to stop the ChromaDB server." -ForegroundColor Gray
+    & $chromaExe run --path "$DataPath" --port $Port --host 127.0.0.1
+    exit 0
+} else {
+    Write-Host "[ERROR] Chroma CLI or Python environment not found. Please install Python 3.11+ and chromadb." -ForegroundColor Red
+    exit 1
+}

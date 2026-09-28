@@ -117,14 +117,28 @@ if (-not $pyExe) {
 $pythonLabel = ("Using Python {0}: {1} {2}" -f $pyVersion, $pyExe, ($pyArgs -join ' ')).TrimEnd()
 Write-Host $pythonLabel
 
-# 2. Create the virtualenv if missing
+# 2. Create the virtualenv if missing or if existing venv is broken/stale
 $venvPy = Join-Path $PSScriptRoot "venv\Scripts\python.exe"
-if (-not (Test-Path $venvPy)) {
+$venvValid = $false
+if (Test-Path $venvPy) {
+    try {
+        $testOut = (& $venvPy -c "import sys; print('ok')" 2>$null).Trim()
+        if ($testOut -eq "ok") { $venvValid = $true }
+    } catch {
+        $venvValid = $false
+    }
+}
+
+if (-not $venvValid) {
+    if (Test-Path (Join-Path $PSScriptRoot "venv")) {
+        Write-Host "Existing venv has invalid paths from another machine or is broken. Re-creating..." -ForegroundColor Yellow
+        Remove-Item -Recurse -Force (Join-Path $PSScriptRoot "venv") -ErrorAction SilentlyContinue
+    }
     Write-Step "Creating virtual environment (venv)"
     & $pyExe @pyArgs -m venv venv
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $venvPy)) { Fail "Failed to create the virtual environment." }
 } else {
-    Write-Host "venv already exists - skipping creation."
+    Write-Host "venv already exists and is functional - skipping creation."
 }
 
 # 3. Install / update dependencies
@@ -174,7 +188,7 @@ Write-Step ("Starting MRPL Sovereign AI Workbench at http://{0}:{1}" -f $BindHos
 Write-Host "==========================================================================" -ForegroundColor Green
 Write-Host " [SIH26117] Sovereign On-Premise Agentic AI Workbench - MRPL Air-Gap Mode" -ForegroundColor Green
 Write-Host " Web Interface:  http://127.0.0.1:$Port" -ForegroundColor Cyan
-Write-Host " Admin Accounts: admin  OR  vinayak" -ForegroundColor Yellow
+Write-Host " Admin Accounts: admin" -ForegroundColor Yellow
 Write-Host " Password:       admin12345" -ForegroundColor Yellow
 Write-Host " Merkle Audit:   data/audit_trail.jsonl (Active SHA-256 Chaining)" -ForegroundColor Magenta
 Write-Host "==========================================================================" -ForegroundColor Green

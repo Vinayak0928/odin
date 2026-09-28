@@ -364,11 +364,14 @@ class ChatProcessor:
             try:
                 rag_manager = getattr(self.personal_docs_manager, 'rag_manager', None)
                 if rag_manager:
-                    results = rag_manager.search(message, k=5, owner=owner)
+                    results = rag_manager.search(message, k=4, owner=owner)
                     # Filter by similarity threshold
                     relevant = [r for r in results if r.get("similarity", 0) >= self.RAG_SIMILARITY_THRESHOLD]
+                    # Keep top 3 most relevant items to ensure fast CPU prompt evaluation
+                    relevant.sort(key=lambda r: r.get("similarity", 0), reverse=True)
+                    relevant = relevant[:3]
                     if relevant:
-                        logger.info(f"RAG: {len(relevant)}/{len(results)} results above threshold {self.RAG_SIMILARITY_THRESHOLD}")
+                        logger.info(f"RAG: {len(relevant)} results above threshold {self.RAG_SIMILARITY_THRESHOLD}")
                         rag_sources = [
                             {
                                 "filename": r["metadata"].get("filename", r["metadata"].get("source", "unknown")),
@@ -377,11 +380,16 @@ class ChatProcessor:
                             }
                             for r in relevant
                         ]
-                        rag_content = "Relevant documents:\n\n" + "\n\n---\n\n".join(
-                            f"[{s['filename']}]\n{r['document']}" for s, r in zip(rag_sources, relevant)
-                        )
-                        if len(rag_content) > 10000:
-                            rag_content = rag_content[:10000] + "\n[Truncated]"
+                        doc_texts = []
+                        for s, r in zip(rag_sources, relevant):
+                            doc_text = r["document"].strip()
+                            if len(doc_text) > 800:
+                                doc_text = doc_text[:800] + "\n..."
+                            doc_texts.append(f"[{s['filename']}]\n{doc_text}")
+
+                        rag_content = "Relevant documents:\n\n" + "\n\n---\n\n".join(doc_texts)
+                        if len(rag_content) > 3000:
+                            rag_content = rag_content[:3000] + "\n[Truncated]"
                         preface.append(untrusted_context_message(
                             "retrieved documents",
                             rag_content,

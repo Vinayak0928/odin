@@ -2027,7 +2027,7 @@ function initializeEventListeners() {
   // Init RAG state on load
   {
     const st = loadToggleState();
-    const ragState = st.rag || false;
+    const ragState = st.rag !== undefined ? st.rag : true;
     _syncRagIndicator(ragState);
   }
 
